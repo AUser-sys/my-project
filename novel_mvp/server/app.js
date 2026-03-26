@@ -1,80 +1,138 @@
 const express = require("express");
-const cors = require("cors");
 const mysql = require("mysql2");
+const cors = require("cors");
 
 const app = express();
-app.use(cors());
+app.use(cors()); // 允许前端跨域请求
 app.use(express.json());
 
-// 1. 连接数据库 (这一步是关键！)
+// 1. 配置数据库连接
 const db = mysql.createConnection({
   host: "localhost",
-  user: "root", // MySQL 默认用户名通常是 root
-  password: "123456", // ⚠️ 必须把这里替换成你真实的数据库密码！
-  database: "novel_db",
+  user: "root",
+  password: "123456", // <--- 注意！这里换成你本机的 MySQL 密码！
+  database: "novel_mvp",
 });
 
+// 测试数据库连通性
 db.connect((err) => {
-  if (err) {
-    console.error("❌ 数据库连接失败:", err.message);
-    return;
-  }
-  console.log("✅ 成功连接到 MySQL 数据库 novel_db!");
+  if (err) console.error("数据库连接失败:", err);
+  else console.log("✅ 数据库连接成功！");
 });
 
-// 2. 极简 API 接口：获取小说列表
+// ==========================================
+// 2. 新增：获取所有分类接口
+// ==========================================
+app.get("/api/categories", (req, res) => {
+  db.query("SELECT * FROM categories", (err, results) => {
+    if (err) res.status(500).json({ error: "获取分类失败" });
+    else res.json(results);
+  });
+});
+
+// ==========================================
+// 3. 升级：获取小说列表（支持按分类筛选！）
+// ==========================================
 app.get("/api/books", (req, res) => {
-  const sql = "SELECT * FROM books";
-  db.query(sql, (err, results) => {
+  const categoryId = req.query.category_id; // 接收前端传来的分类ID
+
+  let sql = "SELECT id, title, author, status FROM books";
+  let params = [];
+
+  // 如果前端传了分类ID，我们就加上 WHERE 条件进行过滤
+  if (categoryId && categoryId !== "0") {
+    sql += " WHERE category_id = ?";
+    params.push(categoryId);
+  }
+
+  db.query(sql, params, (err, results) => {
+    if (err) res.status(500).json({ error: "获取数据失败" });
+    else res.json(results);
+  });
+});
+// 3. 新增极简接口：根据小说ID获取章节内容
+app.get("/api/chapters/:bookId", (req, res) => {
+  const bookId = req.params.bookId;
+  // 按照章节序号从小到大排序查询
+  const sql =
+    "SELECT chapter_num, title, content FROM chapters WHERE book_id = ? ORDER BY chapter_num ASC";
+
+  db.query(sql, [bookId], (err, results) => {
     if (err) {
-      return res.status(500).json({ error: "查询失败" });
+      res.status(500).json({ error: "获取章节失败" });
+    } else {
+      res.json(results); // 把查到的章节数组发给前端
     }
-    res.json({
-      msg: "获取成功",
-      data: results,
-    });
   });
 });
 // ==========================================
-// 🌟 论文高光时刻：基于物品的协同过滤推荐 (Item-CF)
-// 逻辑：找出收藏了当前这本小说(bookId)的用户，看他们还收藏了什么其他小说，按共同收藏次数(相似度)倒序推荐。
+// 4. 核心学术考点：基于协同过滤的推荐算法 (Item-CF极简版)
 // ==========================================
-app.get("/api/recommend/:bookId", (req, res) => {
-  // 获取前端传过来的书籍ID (比如用户正在看《斗破苍穹》，ID就是1)
-  const currentBookId = req.params.bookId;
+app.get("/api/recommend", (req, res) => {
+  // 为了毕设演示方便，我们假设当前登录的是“用户2”
+  const currentUserId = 2;
 
+  // 极简版 Item-CF 核心 SQL 逻辑：
+  // 找“和我收藏过同样书的人，他们还收藏了什么我没看过的书”
   const sql = `
-        SELECT 
-            b.id, 
-            b.title, 
-            b.description,
-            COUNT(f2.user_id) AS similarity_score 
-        FROM favorites f1
-        JOIN favorites f2 ON f1.user_id = f2.user_id
-        JOIN books b ON f2.book_id = b.id
-        WHERE f1.book_id = ? AND f2.book_id != ?
-        GROUP BY f2.book_id
-        ORDER BY similarity_score DESC
-        LIMIT 5
-    `;
+    SELECT DISTINCT b.id, b.title, b.author, b.status
+    FROM behaviors t1
+    JOIN behaviors t2 ON t1.book_id = t2.book_id AND t1.user_id != t2.user_id
+    JOIN behaviors t3 ON t2.user_id = t3.user_id AND t3.book_id != t1.book_id
+    JOIN books b ON t3.book_id = b.id
+    WHERE t1.user_id = ?
+    LIMIT 3
+  `;
 
-  // 执行 SQL，把 currentBookId 填入两个问号的位置
-  db.query(sql, [currentBookId, currentBookId], (err, results) => {
+  db.query(sql, [currentUserId], (err, results) => {
     if (err) {
       console.error(err);
-      return res.status(500).json({ error: "推荐算法计算失败" });
+      res.status(500).json({ error: "推荐算法运算失败" });
+    } else {
+      res.json(results); // 返回推荐出来的 3 本书
     }
-    res.json({
-      msg: "推荐成功",
-      algorithm: "Item-CF", // 答辩时可以指给老师看，我们确实用了这个算法
-      data: results,
+  });
+});
+
+// 3. 启动服务器
+const PORT = 3000;
+// ==========================================
+// 5. 核心商业闭环：模拟沙箱支付/打赏接口
+// ==========================================
+app.post("/api/pay", (req, res) => {
+  // 接收前端传来的打赏金额，默认操作 user_id = 1 (我们初始数据里给他充了50块钱)
+  const amount = req.body.amount;
+  const userId = 1;
+
+  if (!amount) {
+    return res.status(400).json({ error: "金额不能为空" });
+  }
+
+  // 1. 往订单表(orders)里插入一条成功的交易记录
+  const insertOrderSql =
+    'INSERT INTO orders (user_id, amount, status) VALUES (?, ?, "success")';
+
+  db.query(insertOrderSql, [userId, amount], (err, results) => {
+    if (err) {
+      console.error(err);
+      return res.status(500).json({ error: "订单生成失败" });
+    }
+
+    // 2. 扣除用户的余额 (模拟真实的扣款逻辑)
+    const updateBalanceSql =
+      "UPDATE users SET balance = balance - ? WHERE id = ?";
+    db.query(updateBalanceSql, [amount, userId], (err2) => {
+      if (err2) console.error("余额扣除失败，但订单已生成");
+
+      // 返回成功信息给前端
+      res.json({
+        success: true,
+        message: "打赏成功！",
+        orderId: results.insertId,
+      });
     });
   });
 });
-app.get("/", (req, res) => {
-  res.send("<h1>小说APP后端API已启动！请访问 /api/books</h1>");
-});
-// 3. 启动服务器
-app.listen(3000, () => {
-  console.log("🚀 MVP 后端已启动，运行在 http://localhost:3000");
+app.listen(PORT, () => {
+  console.log(`🚀 后端服务已启动: http://localhost:${PORT}`);
 });
