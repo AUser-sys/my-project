@@ -2,6 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 
+// ==========================================
+// 【新增】全局状态管理（MVP极简做法）
+// ==========================================
+int? globalUserId;
+String? globalUsername;
+double globalBalance = 0.0;
+
 void main() => runApp(const NovelApp());
 
 class NovelApp extends StatelessWidget {
@@ -11,12 +18,12 @@ class NovelApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '极简小说',
-      debugShowCheckedModeBanner: false, // 隐藏 Debug 标签
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,
-        scaffoldBackgroundColor: Colors.grey[50], // 整体背景稍微偏灰，显得更有质感
+        scaffoldBackgroundColor: Colors.grey[50],
       ),
-      home: const MainScreen(), // 改为加载带导航栏的主页面
+      home: const MainScreen(),
     );
   }
 }
@@ -26,7 +33,6 @@ class NovelApp extends StatelessWidget {
 // ==========================================
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
-
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
@@ -34,14 +40,11 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
 
+  // 底部导航栏对应的三个页面
   final List<Widget> _pages = [
-    const DiscoverPage(), // 发现好书 (原 BookshelfPage)
-    const Center(
-      child: Text('书架页面 (开发中...)', style: TextStyle(fontSize: 18)),
-    ), // 凑数的页面
-    const Center(
-      child: Text('我的页面 (开发中...)', style: TextStyle(fontSize: 18)),
-    ), // 凑数的页面
+    const DiscoverPage(),
+    const BookshelfPage(), // 真实的我的书架
+    const ProfilePage(), // 真实的我的页面
   ];
 
   @override
@@ -51,11 +54,7 @@ class _MainScreenState extends State<MainScreen> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         selectedItemColor: Colors.blueAccent,
-        onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
+        onTap: (index) => setState(() => _currentIndex = index),
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.explore), label: '书城'),
           BottomNavigationBarItem(icon: Icon(Icons.menu_book), label: '书架'),
@@ -67,20 +66,133 @@ class _MainScreenState extends State<MainScreen> {
 }
 
 // ==========================================
-// 首页：书城列表页 (更美观的排版)
+// 【新增】登录与注册页面
+// ==========================================
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final TextEditingController _usernameCtrl = TextEditingController();
+  final TextEditingController _passwordCtrl = TextEditingController();
+  bool isLoginMode = true; // true:登录模式 false:注册模式
+
+  Future<void> _submit() async {
+    final url = isLoginMode
+        ? 'http://localhost:3000/api/login'
+        : 'http://localhost:3000/api/register';
+    try {
+      final res = await http.post(
+        Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'username': _usernameCtrl.text,
+          'password': _passwordCtrl.text,
+        }),
+      );
+      final data = json.decode(utf8.decode(res.bodyBytes));
+      if (res.statusCode == 200 && data['success']) {
+        // 登录/注册成功，保存全局状态
+        setState(() {
+          globalUserId = data['user']['id'];
+          globalUsername = data['user']['username'];
+          globalBalance = double.parse(data['user']['balance'].toString());
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🎉 ${isLoginMode ? "登录" : "注册"}成功！欢迎回来！'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true); // 返回上一页并告知成功
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(data['error'] ?? '请求失败'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('网络错误'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(isLoginMode ? '欢迎登录' : '新用户注册'),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.account_circle,
+              size: 80,
+              color: Colors.blueAccent,
+            ),
+            const SizedBox(height: 30),
+            TextField(
+              controller: _usernameCtrl,
+              decoration: const InputDecoration(
+                labelText: '账号',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person),
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _passwordCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: '密码',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.lock),
+              ),
+            ),
+            const SizedBox(height: 30),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: _submit,
+                child: Text(
+                  isLoginMode ? '登 录' : '立即注册',
+                  style: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: () => setState(() => isLoginMode = !isLoginMode),
+              child: Text(isLoginMode ? '没有账号？点击注册' : '已有账号？去登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// 【修改】首页：书城列表页 (加入登录拦截)
 // ==========================================
 class DiscoverPage extends StatefulWidget {
   const DiscoverPage({super.key});
-
   @override
   State<DiscoverPage> createState() => _DiscoverPageState();
 }
 
 class _DiscoverPageState extends State<DiscoverPage> {
-  List<dynamic> categories = [];
-  List<dynamic> books = [];
-  List<dynamic> recommendBooks = [];
-  List<dynamic> hotBooks = []; // 热门推荐
+  List<dynamic> categories = [], books = [], recommendBooks = [], hotBooks = [];
   bool isLoading = true;
   int selectedCategoryId = 0;
 
@@ -89,8 +201,8 @@ class _DiscoverPageState extends State<DiscoverPage> {
     super.initState();
     fetchCategories();
     fetchBooks(0);
-    fetchRecommend();
     fetchHotBooks();
+    fetchRecommend();
   }
 
   Future<void> fetchCategories() async {
@@ -117,21 +229,23 @@ class _DiscoverPageState extends State<DiscoverPage> {
       final res = await http.get(
         Uri.parse('http://localhost:3000/api/books?category_id=$categoryId'),
       );
-      if (res.statusCode == 200) {
+      if (res.statusCode == 200)
         setState(() {
           books = json.decode(utf8.decode(res.bodyBytes));
           isLoading = false;
         });
-      }
     } catch (e) {
       setState(() => isLoading = false);
     }
   }
 
   Future<void> fetchRecommend() async {
+    // 推荐接口现需传 userId，若未登录传0让他兜底
     try {
       final res = await http.get(
-        Uri.parse('http://localhost:3000/api/recommend'),
+        Uri.parse(
+          'http://localhost:3000/api/recommend?userId=${globalUserId ?? 0}',
+        ),
       );
       if (res.statusCode == 200)
         setState(
@@ -140,7 +254,28 @@ class _DiscoverPageState extends State<DiscoverPage> {
     } catch (e) {}
   }
 
-  // 构建水平书单卡片的方法
+  // 统一拦截阅读点击
+  void _handleBookTap(dynamic b) async {
+    if (globalUserId == null) {
+      // 未登录，先跳登录
+      final isSuccess = await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+      );
+      if (isSuccess == true) {
+        fetchRecommend(); // 登录后重新拉取属于他的推荐
+      }
+    } else {
+      // 已登录，进入阅读
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ReadingPage(bookId: b['id'], bookTitle: b['title']),
+        ),
+      );
+    }
+  }
+
   Widget buildHorizontalBookList(
     List<dynamic> bookList,
     String title,
@@ -175,13 +310,7 @@ class _DiscoverPageState extends State<DiscoverPage> {
             itemBuilder: (context, index) {
               final b = bookList[index];
               return GestureDetector(
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        ReadingPage(bookId: b['id'], bookTitle: b['title']),
-                  ),
-                ),
+                onTap: () => _handleBookTap(b),
                 child: Container(
                   width: 110,
                   margin: EdgeInsets.only(
@@ -217,7 +346,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 4),
                       Text(
                         b['author'],
                         style: const TextStyle(
@@ -253,7 +381,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 分类导航
             Container(
               height: 55,
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -262,20 +389,15 @@ class _DiscoverPageState extends State<DiscoverPage> {
                 scrollDirection: Axis.horizontal,
                 itemCount: categories.length + 1,
                 itemBuilder: (context, index) {
-                  final isAllButton = index == 0;
-                  final catId = isAllButton ? 0 : categories[index - 1]['id'];
-                  final catName = isAllButton
-                      ? '全部'
-                      : categories[index - 1]['name'];
-                  final isSelected = selectedCategoryId == catId;
-
+                  final isAll = index == 0;
+                  final catId = isAll ? 0 : categories[index - 1]['id'];
                   return Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 6.0),
                     child: ChoiceChip(
-                      label: Text(catName),
-                      selected: isSelected,
+                      label: Text(isAll ? '全部' : categories[index - 1]['name']),
+                      selected: selectedCategoryId == catId,
                       selectedColor: Colors.blue.shade100,
-                      onSelected: (bool selected) {
+                      onSelected: (_) {
                         setState(() => selectedCategoryId = catId);
                         fetchBooks(catId);
                       },
@@ -284,8 +406,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                 },
               ),
             ),
-
-            // 全部分类时显示热门和猜你喜欢
             if (selectedCategoryId == 0) ...[
               buildHorizontalBookList(
                 hotBooks,
@@ -307,15 +427,15 @@ class _DiscoverPageState extends State<DiscoverPage> {
                 ),
               ),
             ],
-
-            // 底部常规列表
             isLoading
-                ? const Padding(
-                    padding: EdgeInsets.all(40.0),
-                    child: Center(child: CircularProgressIndicator()),
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(40),
+                      child: CircularProgressIndicator(),
+                    ),
                   )
                 : ListView.builder(
-                    shrinkWrap: true, // 允许在 SingleChildScrollView 中嵌套
+                    shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: books.length,
                     itemBuilder: (context, index) {
@@ -331,7 +451,6 @@ class _DiscoverPageState extends State<DiscoverPage> {
                           side: BorderSide(color: Colors.grey.shade200),
                         ),
                         child: ListTile(
-                          contentPadding: const EdgeInsets.all(12),
                           leading: Container(
                             width: 50,
                             color: Colors.grey[200],
@@ -344,29 +463,16 @@ class _DiscoverPageState extends State<DiscoverPage> {
                             book['title'],
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
-                          subtitle: Padding(
-                            padding: const EdgeInsets.only(top: 8.0),
-                            child: Text(
-                              '${book['author']} | ${book['status']}',
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                          subtitle: Text(
+                            '${book['author']} | ${book['status']}',
+                            style: const TextStyle(fontSize: 12),
                           ),
                           trailing: const Icon(
                             Icons.arrow_forward_ios,
                             size: 14,
                             color: Colors.grey,
                           ),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => ReadingPage(
-                                  bookId: book['id'],
-                                  bookTitle: book['title'],
-                                ),
-                              ),
-                            );
-                          },
+                          onTap: () => _handleBookTap(book),
                         ),
                       );
                     },
@@ -379,30 +485,286 @@ class _DiscoverPageState extends State<DiscoverPage> {
 }
 
 // ==========================================
-// 极简仿真阅读器页面 (带打赏、调字体、尾页推荐)
+// 【新增】我的书架页面
+// ==========================================
+class BookshelfPage extends StatefulWidget {
+  const BookshelfPage({super.key});
+  @override
+  State<BookshelfPage> createState() => _BookshelfPageState();
+}
+
+class _BookshelfPageState extends State<BookshelfPage> {
+  List<dynamic> myBooks = [];
+  bool isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchMyBooks();
+  }
+
+  Future<void> fetchMyBooks() async {
+    if (globalUserId == null) return;
+    setState(() => isLoading = true);
+    try {
+      final res = await http.get(
+        Uri.parse('http://localhost:3000/api/bookshelf/$globalUserId'),
+      );
+      if (res.statusCode == 200)
+        setState(() {
+          myBooks = json.decode(utf8.decode(res.bodyBytes));
+        });
+    } catch (e) {}
+    setState(() => isLoading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('我的书架', style: TextStyle(color: Colors.black87)),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
+      ),
+      body: globalUserId == null
+          ? Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginPage()),
+                  );
+                  fetchMyBooks();
+                },
+                child: const Text('点我登录查看书架'),
+              ),
+            )
+          : isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : myBooks.isEmpty
+          ? const Center(
+              child: Text(
+                '书架空空如也，快去书城收藏吧~',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            )
+          : GridView.builder(
+              padding: const EdgeInsets.all(16),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                childAspectRatio: 0.65,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+              ),
+              itemCount: myBooks.length,
+              itemBuilder: (context, index) {
+                final b = myBooks[index];
+                return GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ReadingPage(bookId: b['id'], bookTitle: b['title']),
+                    ),
+                  ).then((_) => fetchMyBooks()), // 看完回来刷新书架
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: Container(
+                          width: double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.blueGrey[100],
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Icon(
+                            Icons.book,
+                            size: 40,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        b['title'],
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                      Text(
+                        b['status'],
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// ==========================================
+// 【新增】我的主页页面
+// ==========================================
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+  @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  @override
+  void initState() {
+    super.initState();
+    refreshUserInfo();
+  }
+
+  Future<void> refreshUserInfo() async {
+    if (globalUserId == null) return;
+    try {
+      final res = await http.get(
+        Uri.parse('http://localhost:3000/api/user/$globalUserId'),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(utf8.decode(res.bodyBytes));
+        setState(
+          () => globalBalance = double.parse(data['balance'].toString()),
+        );
+      }
+    } catch (e) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('个人中心', style: TextStyle(color: Colors.black87)),
+        backgroundColor: Colors.white,
+        elevation: 0.5,
+      ),
+      body: globalUserId == null
+          ? Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LoginPage()),
+                  );
+                  setState(() {});
+                  refreshUserInfo();
+                },
+                child: const Text('点我登录'),
+              ),
+            )
+          : ListView(
+              children: [
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 40,
+                    horizontal: 20,
+                  ),
+                  child: Row(
+                    children: [
+                      const CircleAvatar(
+                        radius: 40,
+                        backgroundColor: Colors.blue,
+                        child: Icon(
+                          Icons.person,
+                          size: 50,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 20),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            globalUsername ?? 'User',
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '书币余额: ￥${globalBalance.toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              color: Colors.deepOrange,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                ListTile(
+                  tileColor: Colors.white,
+                  leading: const Icon(Icons.refresh, color: Colors.blue),
+                  title: const Text('刷新余额'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: () {
+                    refreshUserInfo();
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('已刷新')));
+                  },
+                ),
+                const SizedBox(height: 10),
+                ListTile(
+                  tileColor: Colors.white,
+                  leading: const Icon(Icons.logout, color: Colors.red),
+                  title: const Text(
+                    '退出登录',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                  onTap: () {
+                    setState(() {
+                      globalUserId = null;
+                      globalUsername = null;
+                      globalBalance = 0;
+                    });
+                  },
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+// ==========================================
+// 【修改】阅读页 (加入收藏功能与读者讨论板块)
 // ==========================================
 class ReadingPage extends StatefulWidget {
   final int bookId;
   final String bookTitle;
-
   const ReadingPage({super.key, required this.bookId, required this.bookTitle});
-
   @override
   State<ReadingPage> createState() => _ReadingPageState();
 }
 
 class _ReadingPageState extends State<ReadingPage> {
-  List<dynamic> chapters = [];
-  List<dynamic> endRecommendations = []; // 书末推荐
-  bool isLoading = true;
-  double _fontSize = 18.0; // 默认字体大小
-  int _currentPage = 0; // 当前页码/章节序号
+  List<dynamic> chapters = [], endRecommendations = [], comments = [];
+  bool isLoading = true, isCollected = false;
+  double _fontSize = 18.0;
+  int _currentPage = 0;
+  final TextEditingController _commentCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     fetchChapters();
     fetchEndRecommend();
+    checkCollectStatus();
+    fetchComments();
   }
 
   Future<void> fetchChapters() async {
@@ -410,27 +772,88 @@ class _ReadingPageState extends State<ReadingPage> {
       final res = await http.get(
         Uri.parse('http://localhost:3000/api/chapters/${widget.bookId}'),
       );
-      if (res.statusCode == 200) {
+      if (res.statusCode == 200)
         setState(() {
           chapters = json.decode(utf8.decode(res.bodyBytes));
           isLoading = false;
         });
-      }
     } catch (e) {
       setState(() => isLoading = false);
     }
   }
 
-  // 获取书末推荐（复用 /api/recommend 接口获取 4 本）
   Future<void> fetchEndRecommend() async {
     try {
       final res = await http.get(
-        Uri.parse('http://localhost:3000/api/recommend'),
+        Uri.parse(
+          'http://localhost:3000/api/recommend?userId=${globalUserId ?? 1}',
+        ),
       );
       if (res.statusCode == 200)
         setState(
           () => endRecommendations = json.decode(utf8.decode(res.bodyBytes)),
         );
+    } catch (e) {}
+  }
+
+  Future<void> checkCollectStatus() async {
+    try {
+      final res = await http.get(
+        Uri.parse(
+          'http://localhost:3000/api/collect/status?userId=$globalUserId&bookId=${widget.bookId}',
+        ),
+      );
+      if (res.statusCode == 200)
+        setState(() => isCollected = json.decode(res.body)['isCollected']);
+    } catch (e) {}
+  }
+
+  Future<void> toggleCollect() async {
+    try {
+      final res = await http.post(
+        Uri.parse('http://localhost:3000/api/collect/toggle'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'userId': globalUserId, 'bookId': widget.bookId}),
+      );
+      if (res.statusCode == 200) {
+        setState(() => isCollected = json.decode(res.body)['isCollected']);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(isCollected ? '✅ 已加入书架' : '❌ 已移出书架')),
+        );
+      }
+    } catch (e) {}
+  }
+
+  Future<void> fetchComments() async {
+    try {
+      final res = await http.get(
+        Uri.parse('http://localhost:3000/api/comments/${widget.bookId}'),
+      );
+      if (res.statusCode == 200)
+        setState(() => comments = json.decode(utf8.decode(res.bodyBytes)));
+    } catch (e) {}
+  }
+
+  Future<void> submitComment() async {
+    if (_commentCtrl.text.trim().isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('http://localhost:3000/api/comments'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'userId': globalUserId,
+          'bookId': widget.bookId,
+          'content': _commentCtrl.text.trim(),
+        }),
+      );
+      if (res.statusCode == 200) {
+        _commentCtrl.clear();
+        FocusScope.of(context).unfocus(); // 收起键盘
+        fetchComments(); // 重新拉取评论
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('🎉 评论发布成功！')));
+      }
     } catch (e) {}
   }
 
@@ -440,14 +863,20 @@ class _ReadingPageState extends State<ReadingPage> {
       final res = await http.post(
         Uri.parse('http://localhost:3000/api/pay'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'amount': amount}),
+        body: json.encode({'userId': globalUserId, 'amount': amount}),
       );
       if (res.statusCode == 200 && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('🎉 成功打赏 $amount 元！作者动力满满！'),
+            content: Text('🎉 成功打赏 $amount 元！'),
             backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('余额不足或网络错误'),
+            backgroundColor: Colors.red,
           ),
         );
       }
@@ -507,31 +936,36 @@ class _ReadingPageState extends State<ReadingPage> {
     );
   }
 
-  // 书末猜你喜欢界面
+  // 书末界面 (推荐 + 评论区)
   Widget buildEndRecommendationPage() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      color: const Color(0xFFF4ECD8), // 保持羊皮纸背景色一致
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.check_circle_outline, size: 60, color: Colors.green),
-          const SizedBox(height: 20),
-          const Text(
-            '全书完',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 40),
-          const Text(
-            '—— 猜你还喜欢 ——',
-            style: TextStyle(fontSize: 16, color: Colors.grey),
-          ),
-          const SizedBox(height: 20),
-          Expanded(
-            child: GridView.builder(
+    return SingleChildScrollView(
+      padding: const EdgeInsets.only(bottom: 60),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        color: const Color(0xFFF4ECD8),
+        child: Column(
+          children: [
+            const Icon(
+              Icons.check_circle_outline,
+              size: 60,
+              color: Colors.green,
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              '全书完',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 30),
+            const Text(
+              '—— 猜你还喜欢 ——',
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+            const SizedBox(height: 15),
+            GridView.builder(
+              shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2, // 一排两本，共4本
+                crossAxisCount: 2,
                 childAspectRatio: 0.75,
                 crossAxisSpacing: 10,
                 mainAxisSpacing: 10,
@@ -540,16 +974,13 @@ class _ReadingPageState extends State<ReadingPage> {
               itemBuilder: (context, index) {
                 final b = endRecommendations[index];
                 return GestureDetector(
-                  onTap: () {
-                    // 替换当前页面为新书
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) =>
-                            ReadingPage(bookId: b['id'], bookTitle: b['title']),
-                      ),
-                    );
-                  },
+                  onTap: () => Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) =>
+                          ReadingPage(bookId: b['id'], bookTitle: b['title']),
+                    ),
+                  ),
                   child: Card(
                     color: Colors.white.withOpacity(0.8),
                     elevation: 1,
@@ -584,8 +1015,113 @@ class _ReadingPageState extends State<ReadingPage> {
                 );
               },
             ),
-          ),
-        ],
+            const SizedBox(height: 40),
+            // ======= 读者讨论区 =======
+            const Divider(color: Colors.grey),
+            const SizedBox(height: 10),
+            const Row(
+              children: [
+                Icon(Icons.forum, color: Colors.blueGrey),
+                SizedBox(width: 8),
+                Text(
+                  '读者讨论区',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _commentCtrl,
+                    decoration: InputDecoration(
+                      hintText: '写下你的想法...',
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.send, color: Colors.blue),
+                  onPressed: submitComment,
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            comments.isEmpty
+                ? const Text(
+                    '暂无评论，快来抢沙发！',
+                    style: TextStyle(color: Colors.grey),
+                  )
+                : ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: comments.length,
+                    itemBuilder: (context, index) {
+                      final c = comments[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 12.0),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const CircleAvatar(
+                              radius: 16,
+                              backgroundColor: Colors.grey,
+                              child: Icon(
+                                Icons.person,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        c['username'],
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      Text(
+                                        c['time'],
+                                        style: const TextStyle(
+                                          color: Colors.grey,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    c['content'],
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ],
+        ),
       ),
     );
   }
@@ -595,11 +1131,18 @@ class _ReadingPageState extends State<ReadingPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.bookTitle, style: const TextStyle(fontSize: 16)),
-        backgroundColor: const Color(0xFFE8DDCB), // 稍微比底色深一点的头部
+        backgroundColor: const Color(0xFFE8DDCB),
         foregroundColor: Colors.black87,
         elevation: 0,
         actions: [
-          // 字体大小调节按钮 (大中小)
+          IconButton(
+            icon: Icon(
+              isCollected ? Icons.star : Icons.star_border,
+              color: isCollected ? Colors.orange : Colors.grey,
+            ),
+            tooltip: '收藏',
+            onPressed: toggleCollect,
+          ),
           TextButton(
             onPressed: () => setState(() => _fontSize = 14.0),
             child: const Text('小', style: TextStyle(color: Colors.black)),
@@ -619,28 +1162,20 @@ class _ReadingPageState extends State<ReadingPage> {
           ),
         ],
       ),
-      backgroundColor: const Color(0xFFF4ECD8), // 经典的阅读羊皮纸底色
+      backgroundColor: const Color(0xFFF4ECD8),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
           : chapters.isEmpty
           ? const Center(child: Text('作者还在努力码字中...'))
           : Stack(
               children: [
-                // 使用 PageView.builder 翻页
                 PageView.builder(
-                  itemCount: chapters.length + 1, // +1 是为了最后一页展示“猜你喜欢”
-                  onPageChanged: (index) {
-                    setState(() {
-                      _currentPage = index;
-                    });
-                  },
+                  itemCount: chapters.length + 1,
+                  onPageChanged: (index) =>
+                      setState(() => _currentPage = index),
                   itemBuilder: (context, index) {
-                    // 如果翻到了最后一页，展示推荐内容
-                    if (index == chapters.length) {
+                    if (index == chapters.length)
                       return buildEndRecommendationPage();
-                    }
-
-                    // 正常章节内容
                     final chapter = chapters[index];
                     return Padding(
                       padding: const EdgeInsets.only(
@@ -648,7 +1183,7 @@ class _ReadingPageState extends State<ReadingPage> {
                         right: 16.0,
                         top: 16.0,
                         bottom: 40.0,
-                      ), // 留出底部页码空间
+                      ),
                       child: SingleChildScrollView(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -676,8 +1211,6 @@ class _ReadingPageState extends State<ReadingPage> {
                     );
                   },
                 ),
-
-                // 底部固定悬浮的页码显示
                 Positioned(
                   bottom: 10,
                   left: 0,
@@ -685,7 +1218,7 @@ class _ReadingPageState extends State<ReadingPage> {
                   child: Center(
                     child: Text(
                       _currentPage == chapters.length
-                          ? '完结'
+                          ? '讨论区'
                           : '${_currentPage + 1} / ${chapters.length}',
                       style: const TextStyle(color: Colors.grey, fontSize: 12),
                     ),
