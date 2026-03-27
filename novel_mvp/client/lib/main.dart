@@ -92,22 +92,42 @@ class _LoginPageState extends State<LoginPage> {
           'password': _passwordCtrl.text,
         }),
       );
+
       final data = json.decode(utf8.decode(res.bodyBytes));
-      if (res.statusCode == 200 && data['success']) {
-        // 登录/注册成功，保存全局状态
-        setState(() {
-          globalUserId = data['user']['id'];
-          globalUsername = data['user']['username'];
-          globalBalance = double.parse(data['user']['balance'].toString());
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('🎉 ${isLoginMode ? "登录" : "注册"}成功！欢迎回来！'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        Navigator.pop(context, true); // 返回上一页并告知成功
+
+      // 【核心修改】：不再判断不存在的 data['success']，只认 200 状态码
+      if (res.statusCode == 200) {
+        if (isLoginMode) {
+          // 1. 如果是【登录成功】，后端返回了 user 对象，我们保存状态
+          setState(() {
+            globalUserId = data['user']['id'];
+            globalUsername = data['user']['username'];
+            globalBalance = double.parse(data['user']['balance'].toString());
+            // 💡 提示：后期需要把 data['token'] 存到 SharedPreferences 里
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🎉 登录成功！欢迎回来！'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          Navigator.pop(context, true); // 返回上一页
+        } else {
+          // 2. 如果是【注册成功】，后端只返回了 message，没有 user 对象
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🎉 注册成功！请登录。'),
+              backgroundColor: Colors.green,
+            ),
+          );
+          // 注册成功后，不要退出页面，而是自动切换到“登录”模式让用户登录
+          setState(() {
+            isLoginMode = true;
+            _passwordCtrl.clear(); // 清空一下密码框比较好
+          });
+        }
       } else {
+        // 如果后端返回 400, 401(密码错误/用户不存在), 500
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(data['error'] ?? '请求失败'),
@@ -116,8 +136,13 @@ class _LoginPageState extends State<LoginPage> {
         );
       }
     } catch (e) {
+      // 把真实的报错打印在控制台，方便以后排查，而不是盲目猜网络错误
+      debugPrint("💥 前端捕获到异常: $e");
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('网络错误'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('数据解析异常或网络出错，请查看控制台'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
