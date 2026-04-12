@@ -1,29 +1,85 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ==========================================
 // 【新增】全局状态管理（MVP极简做法）
 // ==========================================
+// ==========================================
+// 【新增】全局状态管理（包含本地缓存 Token）
+// ==========================================
 int? globalUserId;
 String? globalUsername;
 double globalBalance = 0.0;
+String? globalToken; // 保存 JWT Token
+String? globalRole; // 【新增】保存用户角色 (user/admin)
+// 【新增】保存用户角色 (user/admin)
+ValueNotifier<ThemeMode> globalThemeMode = ValueNotifier(
+  ThemeMode.light,
+); // 【新增】夜间模式全局控制器
+// 一个小工具：每次发请求时，自动把 Token 塞进请求头里
+// 一个小工具：每次发请求时，自动把 Token 塞进请求头里
+Map<String, String> get globalHeaders {
+  return {
+    'Content-Type': 'application/json',
+    if (globalToken != null) 'Authorization': 'Bearer $globalToken',
+  };
+}
 
-void main() => runApp(const NovelApp());
+void main() async {
+  // 必须加上这句，确保 Flutter 引擎准备好读写本地文件
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // App 刚启动时，去本地“钱包”里找找有没有以前存的 Token 和 用户信息
+  final prefs = await SharedPreferences.getInstance();
+  globalToken = prefs.getString('token');
+  globalUserId = prefs.getInt('userId');
+  globalUsername = prefs.getString('username');
+  globalBalance = prefs.getDouble('balance') ?? 0.0;
+  globalRole = prefs.getString('role'); // 【新增】读取身份
+  // 【新增】启动时读取夜间模式配置
+  bool isDark = prefs.getBool('isDark') ?? false;
+  globalThemeMode.value = isDark ? ThemeMode.dark : ThemeMode.light;
+  runApp(const NovelApp());
+}
 
 class NovelApp extends StatelessWidget {
   const NovelApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '极简小说',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        scaffoldBackgroundColor: Colors.grey[50],
-      ),
-      home: const MainScreen(),
+    // 【修改】监听夜间模式全局变量，实时刷新整个 App 的主题
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: globalThemeMode,
+      builder: (context, themeMode, child) {
+        return MaterialApp(
+          title: '极简小说',
+          debugShowCheckedModeBanner: false,
+          themeMode: themeMode, // 根据变量切换主题
+          theme: ThemeData(
+            primarySwatch: Colors.blue,
+            scaffoldBackgroundColor: Colors.grey[50],
+            appBarTheme: const AppBarTheme(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black87,
+            ),
+          ),
+          darkTheme: ThemeData.dark().copyWith(
+            scaffoldBackgroundColor: Colors.grey[900],
+            appBarTheme: AppBarTheme(
+              backgroundColor: Colors.grey[850],
+              foregroundColor: Colors.white,
+            ),
+            bottomNavigationBarTheme: BottomNavigationBarThemeData(
+              backgroundColor: Colors.grey[900],
+              unselectedItemColor: Colors.grey,
+              selectedItemColor: Colors.blue[300],
+            ),
+          ),
+          home: const MainScreen(),
+        );
+      },
     );
   }
 }
@@ -99,12 +155,21 @@ class _LoginPageState extends State<LoginPage> {
       if (res.statusCode == 200) {
         if (isLoginMode) {
           // 1. 如果是【登录成功】，后端返回了 user 对象，我们保存状态
+          // 1. 如果是【登录成功】，后端返回了 user 对象，我们保存状态
+          // 1. 如果是【登录成功】，后端返回了 user 对象，我们保存状态
           setState(() {
             globalUserId = data['user']['id'];
             globalUsername = data['user']['username'];
             globalBalance = double.parse(data['user']['balance'].toString());
-            // 💡 提示：后期需要把 data['token'] 存到 SharedPreferences 里
+            globalToken = data['token'];
+            globalRole = data['user']['role']; // 【新增】从后端拿取角色
           });
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('token', globalToken!);
+          await prefs.setInt('userId', globalUserId!);
+          await prefs.setString('username', globalUsername!);
+          await prefs.setDouble('balance', globalBalance);
+          await prefs.setString('role', globalRole ?? 'user'); // 【新增】存入本地磁盘
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('🎉 登录成功！欢迎回来！'),
@@ -529,17 +594,22 @@ class _BookshelfPageState extends State<BookshelfPage> {
   }
 
   Future<void> fetchMyBooks() async {
-    if (globalUserId == null) return;
+    if (globalToken == null) return;
     setState(() => isLoading = true);
     try {
       final res = await http.get(
-        Uri.parse('http://localhost:3000/api/bookshelf/$globalUserId'),
+        // 【核心修复】：把 10.0.2.2 改回 localhost
+        Uri.parse('http://localhost:3000/api/bookshelf'),
+        headers: globalHeaders,
       );
-      if (res.statusCode == 200)
+      if (res.statusCode == 200) {
         setState(() {
           myBooks = json.decode(utf8.decode(res.bodyBytes));
         });
-    } catch (e) {}
+      }
+    } catch (e) {
+      debugPrint("拉取书架失败: $e");
+    }
     setState(() => isLoading = false);
   }
 
@@ -665,6 +735,105 @@ class _ProfilePageState extends State<ProfilePage> {
     } catch (e) {}
   }
 
+  // 【新增】处理充值逻辑
+  Future<void> handleRecharge(double amount) async {
+    Navigator.pop(context); // 先关闭弹窗
+    try {
+      final res = await http.post(
+        Uri.parse('http://localhost:3000/api/recharge'),
+        headers: globalHeaders, // 带上 Token
+        body: json.encode({'amount': amount}),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(utf8.decode(res.bodyBytes));
+
+        // 更新内存和本地磁盘的余额
+        setState(() {
+          globalBalance = double.parse(data['newBalance'].toString());
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setDouble('balance', globalBalance);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('🎉 充值成功！当前余额: ￥$globalBalance'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('充值失败，请重试'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("充值报错: $e");
+    }
+  }
+
+  // 【新增】呼出充值面板
+  void showRechargeDialog() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          height: 250,
+          child: Column(
+            children: [
+              const Text(
+                '💎 充值书币',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 20),
+              Wrap(
+                spacing: 20,
+                runSpacing: 15,
+                alignment: WrapAlignment.center,
+                children: [
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[100],
+                      foregroundColor: Colors.blue[800],
+                    ),
+                    onPressed: () => handleRecharge(10),
+                    child: const Text('￥10'),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[300],
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => handleRecharge(50),
+                    child: const Text('￥50'),
+                  ),
+                  ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue[600],
+                      foregroundColor: Colors.white,
+                    ),
+                    onPressed: () => handleRecharge(100),
+                    child: const Text('￥100'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 30),
+              const Text(
+                '测试环境，点击即可模拟真实支付回调',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -731,6 +900,74 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 ),
                 const SizedBox(height: 20),
+                // 【新增】充值入口
+                ListTile(
+                  tileColor: Colors.white,
+                  leading: const Icon(
+                    Icons.account_balance_wallet,
+                    color: Colors.orange,
+                  ),
+                  title: const Text('充值余额'),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                  onTap: showRechargeDialog,
+                ),
+                // ======= 从这里开始复制 =======
+                if (globalRole == 'admin') ...[
+                  ListTile(
+                    tileColor: Colors.red[50],
+                    leading: const Icon(
+                      Icons.admin_panel_settings,
+                      color: Colors.red,
+                    ),
+                    title: const Text(
+                      '管理员控制台',
+                      style: TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.arrow_forward_ios,
+                      size: 16,
+                      color: Colors.red,
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const AdminDashboardPage(),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                ],
+                // ======= 复制到这里结束 =======
+                // ======= 【新增】夜间模式开关 =======
+                ValueListenableBuilder<ThemeMode>(
+                  valueListenable: globalThemeMode,
+                  builder: (context, mode, child) {
+                    final isDark = mode == ThemeMode.dark;
+                    return SwitchListTile(
+                      tileColor: Theme.of(context).cardColor,
+                      secondary: Icon(
+                        isDark ? Icons.nights_stay : Icons.wb_sunny,
+                        color: isDark ? Colors.purple[200] : Colors.orange,
+                      ),
+                      title: const Text('夜间模式'),
+                      value: isDark,
+                      onChanged: (bool value) async {
+                        globalThemeMode.value = value
+                            ? ThemeMode.dark
+                            : ThemeMode.light;
+                        final prefs = await SharedPreferences.getInstance();
+                        await prefs.setBool('isDark', value); // 永久保存设置
+                      },
+                    );
+                  },
+                ),
+                // ======= 开关结束 =======
+                const Divider(height: 1, color: Colors.black12),
                 ListTile(
                   tileColor: Colors.white,
                   leading: const Icon(Icons.refresh, color: Colors.blue),
@@ -751,11 +988,15 @@ class _ProfilePageState extends State<ProfilePage> {
                     '退出登录',
                     style: TextStyle(color: Colors.red),
                   ),
-                  onTap: () {
+                  onTap: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.clear();
                     setState(() {
                       globalUserId = null;
                       globalUsername = null;
                       globalBalance = 0;
+                      globalToken = null;
+                      globalRole = null;
                     });
                   },
                 ),
@@ -822,11 +1063,15 @@ class _ReadingPageState extends State<ReadingPage> {
   }
 
   Future<void> checkCollectStatus() async {
+    if (globalToken == null) return; // 没登录就不检查收藏状态
     try {
       final res = await http.get(
+        // 【修改1】：去掉了 userId，因为后端保安会自己从 Token 查
         Uri.parse(
-          'http://localhost:3000/api/collect/status?userId=$globalUserId&bookId=${widget.bookId}',
+          'http://localhost:3000/api/collect/status?bookId=${widget.bookId}',
         ),
+        // 【核心修改】：带上全局通行证！
+        headers: globalHeaders,
       );
       if (res.statusCode == 200)
         setState(() => isCollected = json.decode(res.body)['isCollected']);
@@ -834,11 +1079,19 @@ class _ReadingPageState extends State<ReadingPage> {
   }
 
   Future<void> toggleCollect() async {
+    if (globalToken == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先登录')));
+      return;
+    }
     try {
       final res = await http.post(
         Uri.parse('http://localhost:3000/api/collect/toggle'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'userId': globalUserId, 'bookId': widget.bookId}),
+        // 【核心修改】：替换为带 Token 的 globalHeaders
+        headers: globalHeaders,
+        // 【修改2】：去掉了 userId，只传 bookId 即可
+        body: json.encode({'bookId': widget.bookId}),
       );
       if (res.statusCode == 200) {
         setState(() => isCollected = json.decode(res.body)['isCollected']);
@@ -884,16 +1137,33 @@ class _ReadingPageState extends State<ReadingPage> {
 
   Future<void> handleTip(int amount) async {
     Navigator.pop(context);
+    if (globalToken == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先登录')));
+      return;
+    }
     try {
       final res = await http.post(
         Uri.parse('http://localhost:3000/api/pay'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'userId': globalUserId, 'amount': amount}),
+        // 【核心修改】：替换为带 Token 的 globalHeaders
+        headers: globalHeaders,
+        // 【修改3】：去掉了 userId，只传金额
+        body: json.encode({'amount': amount}),
       );
       if (res.statusCode == 200 && mounted) {
+        final data = json.decode(utf8.decode(res.bodyBytes));
+
+        // 【额外优化】：打赏成功后，直接用后端返回的新余额更新本地状态！
+        setState(() {
+          globalBalance = double.parse(data['newBalance'].toString());
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setDouble('balance', globalBalance);
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('🎉 成功打赏 $amount 元！'),
+            content: Text('🎉 ${data['message']} (剩余￥$globalBalance)'),
             backgroundColor: Colors.green,
           ),
         );
@@ -1251,6 +1521,367 @@ class _ReadingPageState extends State<ReadingPage> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+// ==========================================
+// 【新增】管理员控制台页面
+// ==========================================
+class AdminDashboardPage extends StatefulWidget {
+  const AdminDashboardPage({super.key});
+  @override
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+  List<dynamic> users = [];
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchUsers();
+  }
+
+  // 获取用户列表
+  Future<void> fetchUsers() async {
+    try {
+      final res = await http.get(
+        Uri.parse('http://localhost:3000/api/admin/users'),
+        headers: globalHeaders,
+      );
+      if (res.statusCode == 200) {
+        setState(() {
+          users = json.decode(utf8.decode(res.bodyBytes));
+          isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint("获取用户失败: $e");
+    }
+  }
+
+  // 封禁/解封功能
+  Future<void> toggleUserStatus(int userId, String currentStatus) async {
+    final newStatus = currentStatus == 'active' ? 'banned' : 'active';
+    try {
+      final res = await http.put(
+        Uri.parse('http://localhost:3000/api/admin/users/$userId/status'),
+        headers: globalHeaders,
+        body: json.encode({'status': newStatus}),
+      );
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(newStatus == 'banned' ? '🚫 用户已被封禁' : '✅ 用户已解封'),
+          ),
+        );
+        fetchUsers(); // 刷新列表
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('操作失败，不能封禁自己！'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 3, // 对应你需求的 3 个管理模块
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            '管理员控制台',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          backgroundColor: Colors.redAccent,
+          foregroundColor: Colors.white,
+          bottom: const TabBar(
+            indicatorColor: Colors.white,
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            tabs: [
+              Tab(icon: Icon(Icons.people), text: "用户管理"),
+              Tab(icon: Icon(Icons.library_books), text: "图书管理"),
+              Tab(icon: Icon(Icons.format_list_numbered), text: "章节管理"),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            // Tab 1: 用户管理 (实现封禁/解封)
+            isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : ListView.builder(
+                    itemCount: users.length,
+                    itemBuilder: (context, index) {
+                      final u = users[index];
+                      final isBanned = u['status'] == 'banned';
+                      final isAdmin = u['role'] == 'admin';
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: isAdmin
+                              ? Colors.red
+                              : (isBanned ? Colors.grey : Colors.blue),
+                          child: Icon(
+                            isAdmin ? Icons.admin_panel_settings : Icons.person,
+                            color: Colors.white,
+                          ),
+                        ),
+                        title: Text(
+                          "${u['username']} (ID: ${u['id']})",
+                          style: TextStyle(
+                            decoration: isBanned
+                                ? TextDecoration.lineThrough
+                                : null,
+                          ),
+                        ),
+                        subtitle: Text(
+                          "余额: ￥${u['balance']} | 状态: ${isBanned ? '已封禁' : '正常'}",
+                        ),
+                        trailing: isAdmin
+                            ? const SizedBox()
+                            : ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: isBanned
+                                      ? Colors.green
+                                      : Colors.red,
+                                  foregroundColor: Colors.white,
+                                ),
+                                onPressed: () =>
+                                    toggleUserStatus(u['id'], u['status']),
+                                child: Text(isBanned ? '解封' : '封禁'),
+                              ),
+                      );
+                    },
+                  ),
+
+            // Tab 2: 图书管理 (真实表单)
+            const AdminBooksTab(),
+
+            // Tab 3: 章节管理 (真实表单)
+            const AdminChaptersTab(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// 【新增】管理员子组件：图书录入表单
+// ==========================================
+class AdminBooksTab extends StatefulWidget {
+  const AdminBooksTab({super.key});
+  @override
+  State<AdminBooksTab> createState() => _AdminBooksTabState();
+}
+
+class _AdminBooksTabState extends State<AdminBooksTab> {
+  final _catCtrl = TextEditingController(text: '1'); // 默认分类1
+  final _titleCtrl = TextEditingController();
+  final _authorCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+
+  Future<void> submitBook() async {
+    if (_titleCtrl.text.isEmpty || _authorCtrl.text.isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('http://localhost:3000/api/admin/books'),
+        headers: globalHeaders,
+        body: json.encode({
+          'category_id': int.parse(_catCtrl.text),
+          'title': _titleCtrl.text,
+          'author': _authorCtrl.text,
+          'description': _descCtrl.text,
+        }),
+      );
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('✅ 新书录入成功')));
+        _titleCtrl.clear();
+        _authorCtrl.clear();
+        _descCtrl.clear();
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('❌ 录入失败')));
+      }
+    } catch (e) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Text(
+          '📚 快速录入新书',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 20),
+        TextField(
+          controller: _catCtrl,
+          decoration: const InputDecoration(
+            labelText: '分类ID (例如1、2、3)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 15),
+        TextField(
+          controller: _titleCtrl,
+          decoration: const InputDecoration(
+            labelText: '书名',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 15),
+        TextField(
+          controller: _authorCtrl,
+          decoration: const InputDecoration(
+            labelText: '作者',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 15),
+        TextField(
+          controller: _descCtrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            labelText: '小说简介',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 50),
+            backgroundColor: Colors.blue,
+          ),
+          onPressed: submitBook,
+          child: const Text(
+            '提交新书到数据库',
+            style: TextStyle(fontSize: 16, color: Colors.white),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ==========================================
+// 【新增】管理员子组件：章节发布表单
+// ==========================================
+class AdminChaptersTab extends StatefulWidget {
+  const AdminChaptersTab({super.key});
+  @override
+  State<AdminChaptersTab> createState() => _AdminChaptersTabState();
+}
+
+class _AdminChaptersTabState extends State<AdminChaptersTab> {
+  final _bookIdCtrl = TextEditingController();
+  final _chapNumCtrl = TextEditingController();
+  final _titleCtrl = TextEditingController();
+  final _contentCtrl = TextEditingController();
+
+  Future<void> submitChapter() async {
+    if (_bookIdCtrl.text.isEmpty || _contentCtrl.text.isEmpty) return;
+    try {
+      final res = await http.post(
+        Uri.parse('http://localhost:3000/api/admin/chapters'),
+        headers: globalHeaders,
+        body: json.encode({
+          'book_id': int.parse(_bookIdCtrl.text),
+          'chapter_num': int.parse(_chapNumCtrl.text),
+          'title': _titleCtrl.text,
+          'content': _contentCtrl.text,
+        }),
+      );
+      if (res.statusCode == 200) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('✅ 章节发布成功')));
+        _chapNumCtrl.text = (int.parse(_chapNumCtrl.text) + 1)
+            .toString(); // 自动加一章
+        _titleCtrl.clear();
+        _contentCtrl.clear();
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('❌ 发布失败')));
+      }
+    } catch (e) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Text(
+          '📝 发布新章节',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _bookIdCtrl,
+                decoration: const InputDecoration(
+                  labelText: '目标书籍ID',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: _chapNumCtrl,
+                decoration: const InputDecoration(
+                  labelText: '第几章',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 15),
+        TextField(
+          controller: _titleCtrl,
+          decoration: const InputDecoration(
+            labelText: '章节标题 (如：第一章 深渊)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 15),
+        TextField(
+          controller: _contentCtrl,
+          maxLines: 10,
+          decoration: const InputDecoration(
+            labelText: '正文内容',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 20),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            minimumSize: const Size(double.infinity, 50),
+            backgroundColor: Colors.green,
+          ),
+          onPressed: submitChapter,
+          child: const Text(
+            '立刻发布章节',
+            style: TextStyle(fontSize: 16, color: Colors.white),
+          ),
+        ),
+      ],
     );
   }
 }
