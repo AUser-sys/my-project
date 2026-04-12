@@ -15,7 +15,6 @@ app.use(cors());
 app.use(express.json());
 
 // 这是一个身份验证中间件（保安）
-// 这是一个身份验证中间件（普通保安）
 const authenticateToken = (req, res, next) => {
   // 1. 从请求头中获取 token (格式通常是 "Bearer eyJhbG...")
   const authHeader = req.headers["authorization"];
@@ -37,18 +36,6 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// 这是一个管理员权限验证中间件（高级保安，和上面的平级！）
-// 必须放在 authenticateToken 后面使用
-const authenticateAdmin = (req, res, next) => {
-  // 从 req.user (由 authenticateToken 解析出来的) 中检查角色
-  if (req.user.role !== "admin") {
-    return res
-      .status(403)
-      .json({ error: "权限不足，需要管理员身份执行此操作" });
-  }
-  next(); // 是管理员，放行
-};
-
 // 1. 配置数据库连接
 const db = mysql.createConnection({
   host: "localhost",
@@ -63,7 +50,7 @@ db.connect((err) => {
 });
 
 // ==========================================
-// 【修改】用户注册接口 (增加防空格和防呆设计)
+// 【新增】用户注册接口
 // ==========================================
 app.post("/api/register", async (req, res) => {
   const { username, password } = req.body;
@@ -72,16 +59,17 @@ app.post("/api/register", async (req, res) => {
     return res.status(400).json({ error: "用户名和密码不能为空" });
   }
 
-  // 强制转为字符串，并去掉首尾可能误触的空格！
-  const safeUsername = String(username).trim();
-  const safePassword = String(password).trim();
-
   try {
+    // 【核心修改点 1】：对明文密码进行加密 (加盐哈希)
+    // 生成一个随机的“盐” (复杂度为10)
     const salt = bcrypt.genSaltSync(10);
-    const hashedPassword = bcrypt.hashSync(safePassword, salt); // 用去空格后的密码加密
+    // 将明文密码和“盐”混合，生成加密后的密码
+    const hashedPassword = bcrypt.hashSync(password, salt);
 
+    // 【核心修改点 2】：把 hashedPassword 存入数据库，而不是原来的 password
     const sql = "INSERT INTO users (username, password) VALUES (?, ?)";
-    db.query(sql, [safeUsername, hashedPassword], (err, result) => {
+    // 注意这里传入的是 hashedPassword
+    db.query(sql, [username, hashedPassword], (err, result) => {
       if (err) {
         console.error(err);
         return res.status(500).json({ error: "数据库错误，可能用户名已存在" });
@@ -92,51 +80,52 @@ app.post("/api/register", async (req, res) => {
     res.status(500).json({ error: "服务器内部错误" });
   }
 });
+
 // ==========================================
-// 【修改】用户登录接口 (配合防空格设计)
+// 【新增】用户登录接口
 // ==========================================
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
 
-  // 同样强制转字符串并去掉首尾空格！
-  const safeUsername = String(username).trim();
-  const safePassword = String(password).trim();
-
   const sql = "SELECT * FROM users WHERE username = ?";
-
-  db.query(sql, [safeUsername], (err, results) => {
+  db.query(sql, [username], (err, results) => {
     if (err) return res.status(500).json({ error: "数据库错误" });
 
+    // 1. 检查用户是否存在
     if (results.length === 0) {
       return res.status(401).json({ error: "用户不存在" });
     }
 
     const user = results[0];
 
-    // 将处理过的明文密码与数据库密文比对
-    const isPasswordValid = bcrypt.compareSync(safePassword, user.password);
+    // 2. 【核心修改点 1】：验证密码
+    // 将用户输入的明文密码，与数据库里的密文密码进行比对
+    const isPasswordValid = bcrypt.compareSync(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ error: "密码错误" });
     }
 
+    // 3. 【核心修改点 2】：密码正确，生成 JWT Token
+    // 把用户的 id 和 username 封存在 token 里。设置 7 天过期。
     const token = jwt.sign(
-      { userId: user.id, username: user.username, role: user.role },
+      { userId: user.id, username: user.username },
       JWT_SECRET,
       { expiresIn: "7d" },
     );
 
+    // 4. 将 token 返回给前端
     res.status(200).json({
       message: "登录成功",
-      token: token,
+      token: token, // 前端需要把这个 token 存起来
       user: {
         id: user.id,
         username: user.username,
         balance: user.balance,
-        role: user.role,
       },
     });
   });
 });
+
 // ==========================================
 // 【新增】获取用户信息 (用于刷新余额)
 // ==========================================
@@ -363,7 +352,7 @@ app.post("/api/pay", authenticateToken, (req, res) => {
                   );
                 }
 
-                // 5. 全部成功，提交事务！
+                // 5. 全部成功，提交事务！对
                 db.commit((err4) => {
                   if (err4) {
                     return db.rollback(() =>
@@ -447,135 +436,7 @@ app.post("/api/recharge", authenticateToken, (req, res) => {
     );
   });
 });
-// ==========================================
-// 【新增】管理员专属 API (图书、章节、用户管理)
-// ==========================================
 
-// (1) 图书资源管理
-// 录入新书
-app.post(
-  "/api/admin/books",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    const { category_id, title, author, description, cover_url } = req.body;
-    const sql =
-      "INSERT INTO books (category_id, title, author, description, cover_url) VALUES (?, ?, ?, ?, ?)";
-    db.query(
-      sql,
-      [
-        category_id,
-        title,
-        author,
-        description,
-        cover_url || "https://via.placeholder.com/150x200?text=Cover",
-      ],
-      (err) => {
-        if (err) return res.status(500).json({ error: "录入新书失败" });
-        res.json({ success: true, message: "新书录入成功" });
-      },
-    );
-  },
-);
-
-// 修改书籍基础信息
-app.put(
-  "/api/admin/books/:id",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    const { category_id, title, author, description, status, publish_status } =
-      req.body;
-    const sql =
-      "UPDATE books SET category_id=?, title=?, author=?, description=?, status=?, publish_status=? WHERE id=?";
-    db.query(
-      sql,
-      [
-        category_id,
-        title,
-        author,
-        description,
-        status,
-        publish_status,
-        req.params.id,
-      ],
-      (err) => {
-        if (err) return res.status(500).json({ error: "修改失败" });
-        res.json({ success: true, message: "修改成功" });
-      },
-    );
-  },
-);
-
-// (2) 章节内容管理
-// 添加新章节
-app.post(
-  "/api/admin/chapters",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    const { book_id, chapter_num, title, content } = req.body;
-    const sql =
-      "INSERT INTO chapters (book_id, chapter_num, title, content) VALUES (?, ?, ?, ?)";
-    db.query(sql, [book_id, chapter_num, title, content], (err) => {
-      if (err) return res.status(500).json({ error: "添加章节失败" });
-      res.json({ success: true, message: "章节发布成功" });
-    });
-  },
-);
-
-// 修改已发布章节
-app.put(
-  "/api/admin/chapters/:id",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    const { chapter_num, title, content } = req.body;
-    const sql =
-      "UPDATE chapters SET chapter_num=?, title=?, content=? WHERE id=?";
-    db.query(sql, [chapter_num, title, content, req.params.id], (err) => {
-      if (err) return res.status(500).json({ error: "修改章节失败" });
-      res.json({ success: true, message: "章节修改成功" });
-    });
-  },
-);
-
-// (3) 用户档案管理
-// 获取所有读者列表
-app.get(
-  "/api/admin/users",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    db.query(
-      "SELECT id, username, balance, role, status, created_at FROM users ORDER BY id DESC",
-      (err, results) => {
-        if (err) return res.status(500).json({ error: "获取用户列表失败" });
-        res.json(results);
-      },
-    );
-  },
-);
-
-// 封禁/解封用户 (修改 status 字段)
-app.put(
-  "/api/admin/users/:id/status",
-  authenticateToken,
-  authenticateAdmin,
-  (req, res) => {
-    const { status } = req.body; // 传入 'active' 或 'banned'
-    if (req.params.id == req.user.userId)
-      return res.status(400).json({ error: "不能封禁管理员自己" });
-    db.query(
-      "UPDATE users SET status=? WHERE id=?",
-      [status, req.params.id],
-      (err) => {
-        if (err) return res.status(500).json({ error: "操作失败" });
-        res.json({ success: true, message: `用户状态已更新为 ${status}` });
-      },
-    );
-  },
-);
 const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`🚀 后端服务已启动: http://localhost:${PORT}`);
